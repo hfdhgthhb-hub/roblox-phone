@@ -1,6 +1,8 @@
 // Vercel serverless: /api/phone?app=yt|shorts|google|wiki&q=...
 // No API keys, no login, no bot-check.
 
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
 const strip = (s = "") =>
   s.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&#x27;/g, "'")
    .replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").trim();
@@ -11,7 +13,7 @@ const CTX = { client: { clientName: "WEB", clientVersion: "2.20240726.00.00", hl
 async function ytSearch(q) {
   const r = await fetch(INNERTUBE, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "User-Agent": "Mozilla/5.0" },
+    headers: { "Content-Type": "application/json", "User-Agent": UA },
     body: JSON.stringify({ context: CTX, query: q }),
   });
   const j = await r.json();
@@ -40,7 +42,7 @@ async function ytSearch(q) {
 
 async function google(q) {
   const r = await fetch("https://html.duckduckgo.com/html/?q=" + encodeURIComponent(q), {
-    headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36" },
+    headers: { "User-Agent": UA },
   });
   const h = await r.text();
   const re = /<a rel="nofollow" class="result__a" href="([^"]+)">([\s\S]*?)<\/a>[\s\S]*?class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
@@ -55,7 +57,9 @@ async function google(q) {
 }
 
 async function wiki(q) {
-  const r = await fetch("https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&srlimit=15&srsearch=" + encodeURIComponent(q));
+  const r = await fetch("https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&srlimit=15&srsearch=" + encodeURIComponent(q), {
+    headers: { "User-Agent": UA }
+  });
   const j = await r.json();
   return { results: (j?.query?.search || []).map(x => ({
     title: x.title,
@@ -77,4 +81,4 @@ export default async function handler(req, res) {
   } catch (e) {
     return res.status(500).json({ error: String(e) });
   }
-    }
+}

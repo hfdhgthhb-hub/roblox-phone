@@ -3,29 +3,33 @@ import { spawn, execFile } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
 
 // ================= CONFIG =================
-const SECRET  = process.env.SECRET || "";        // same value as VKEY in PhoneServer
-const PROXY   = process.env.YT_PROXY || "";      // optional: http://user:pass@host:port (residential proxy)
-const COOKIES = process.env.YT_COOKIES || "";    // optional: Netscape cookies.txt text (throwaway account!)
+const SECRET  = process.env.SECRET || "";
+const PROXY   = process.env.YT_PROXY || "";
+const COOKIES = process.env.YT_COOKIES || "";
 
-const FPS = 8;                    // video frames per second sent to Roblox
-const SEG_SEC = 10;               // seconds per cached segment
+const FPS = 8;
+const SEG_SEC = 10;
 const SEG_FRAMES = FPS * SEG_SEC;
-const LW = 160, LH = 90;          // landscape pixel size (portrait is swapped)
-const ENV_RATE = 32;              // audio envelope steps per second
-const NB = 20;                    // audio bands (must match client)
-const AR = 8000;                  // audio analysis sample rate
-const HOP = AR / ENV_RATE;        // 250 samples per step
-const FMIN = 120, FMAX = 3600;    // band range in Hz (must match client)
-const MAX_FF = 3;                 // max simultaneous ffmpeg processes
+const LW = 160, LH = 90;
+const ENV_RATE = 32;
+const NB = 20;
+const AR = 8000;
+const HOP = AR / ENV_RATE;
+const FMIN = 120, FMAX = 3600;
+const MAX_FF = 3;
 
-const CLIENTS = ["tv", "android_vr", "mweb", "web_safari", ""]; // "" = yt-dlp default
-const FORMAT = "b[height<=240]/bv*[height<=240]+ba/b[height<=360]/bv*[height<=360]+ba/b/bv*+ba";
+// ✅ FIXED: ios first (best for datacenter IPs), then android, tv_embedded
+const CLIENTS = ["ios", "android", "tv_embedded", "mweb", "web_safari", ""];
+
+// ✅ FIXED: "worst video + worst audio" — always available, small, fast
+const FORMAT = "wv*+wa/w/bv*+ba/b";
+
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const app = express();
 
-// ---------- optional PO-token provider (helps mweb client on datacenter IPs) ----------
+// ---------- optional PO-token provider ----------
 let potUp = false;
 if (existsSync("/opt/pot/server/build/main.js")) {
   try {
@@ -45,9 +49,9 @@ function acquire() {
 function release() { const n = waitq.shift(); if (n) n(); else active--; }
 
 // ================= yt-dlp extraction =================
-const fmtCache = new Map();   // id -> { video, audio, exp }
+const fmtCache = new Map();
 const fmtInflight = new Map();
-const failCache = new Map();  // id -> { msg, exp }
+const failCache = new Map();
 let goodClient = null;
 let noJsFlag = false;
 
@@ -164,7 +168,7 @@ function ffmpegRun(args, input) {
   });
 }
 
-// ================= video segment jobs (stream into a buffer) =================
+// ================= video segment jobs =================
 const jobs = new Map();
 
 function evictJobs() {
@@ -315,7 +319,6 @@ app.get("/frames", async (req, res) => {
       return res.json({ error: "still loading" });
     }
 
-    // prefetch next segment once we're past halfway (unless video already ended)
     if (fi + need >= SEG_FRAMES / 2 && !(job.done && Math.floor(job.len / fb) < SEG_FRAMES)) {
       getVideoJob(id, si + 1, vert, fmt);
       getAudioEnv(id, si + 1, fmt);
@@ -336,7 +339,7 @@ app.get("/frames", async (req, res) => {
   }
 });
 
-// ---------- thumbnails (batched) ----------
+// ---------- thumbnails ----------
 const thumbCache = new Map();
 async function makeThumb(id, vert) {
   const src = `https://i.ytimg.com/vi/${id}/${vert ? "hqdefault" : "mqdefault"}.jpg`;
@@ -375,7 +378,7 @@ app.get("/thumbs", async (req, res) => {
   }
 });
 
-// ---------- diagnostics: open https://YOUR-RENDER-URL/debug?k=SECRET in a browser ----------
+// ---------- diagnostics ----------
 app.get("/debug", async (req, res) => {
   if (!auth(req, res)) return;
   const id = /^[\w-]{11}$/.test(String(req.query.id || "")) ? String(req.query.id) : "dQw4w9WgXcQ";

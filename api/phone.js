@@ -1,5 +1,5 @@
 // Vercel serverless: /api/phone?app=yt|shorts|google|wiki&q=...
-// Set BRAVE_API_KEY in Vercel environment variables for Google search to work.
+// Set SERPER_API_KEY in Vercel environment variables for Google search to work.
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 const strip = (s = "") =>
@@ -40,14 +40,17 @@ async function ytSearch(q) {
   return { results: out.slice(0, 24) };
 }
 
-async function brave(q) {
-  const key = process.env.BRAVE_API_KEY;
-  if (!key) throw new Error("no BRAVE_API_KEY");
-  const r = await fetch("https://api.search.brave.com/res/v1/web/search?count=15&q=" + encodeURIComponent(q),
-    { headers: { "Accept": "application/json", "X-Subscription-Token": key } });
+async function serper(q) {
+  const key = process.env.SERPER_API_KEY;
+  if (!key) throw new Error("no SERPER_API_KEY");
+  const r = await fetch("https://google.serper.dev/search", {
+    method: "POST",
+    headers: { "X-API-KEY": key, "Content-Type": "application/json" },
+    body: JSON.stringify({ q, num: 15 }),
+  });
   if (!r.ok) throw new Error("http " + r.status);
   const j = await r.json();
-  return (j.web?.results || []).map(x => ({ title: strip(x.title), url: x.url, snippet: strip(x.description || "") }));
+  return (j.organic || []).map(x => ({ title: strip(x.title), url: x.link, snippet: strip(x.snippet || "") }));
 }
 
 async function wiki(q) {
@@ -65,10 +68,10 @@ async function wiki(q) {
 async function google(q) {
   if (!q) return { results: [] };
   try {
-    const results = (await brave(q)).filter(x => x.url && x.title);
-    return { results, via: "brave" };
+    const results = (await serper(q)).filter(x => x.url && x.title);
+    return { results, via: "serper" };
   } catch (e) {
-    return { results: [], note: "Brave search failed: " + String(e.message).slice(0, 100) + " (add BRAVE_API_KEY to Vercel env vars)" };
+    return { results: [], note: "Serper search failed: " + String(e.message).slice(0, 100) + " (add SERPER_API_KEY to Vercel env vars)" };
   }
 }
 
@@ -85,4 +88,4 @@ export default async function handler(req, res) {
   } catch (e) {
     return res.status(500).json({ error: String(e) });
   }
-}
+          }

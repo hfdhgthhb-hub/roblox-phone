@@ -17,8 +17,20 @@ const HOP = AR / ENV_RATE;
 const FMIN = 120, FMAX = 3600;
 const MAX_FF = 3;
 
-// Expanded client list
-const CLIENTS = ["ios", "android", "tv_embedded", "mweb", "web_safari", "web", "android_vr", "tv", ""];
+// ✅ THE WINNING COMBO FIRST: default client + skip-webpage
+// (we found this from /debug — it's the only one that works on Render's IP)
+const COMBOS = [
+  { client: "",           skip: true  },  // ⭐ THE WINNER
+  { client: "ios",        skip: true  },
+  { client: "android",    skip: true  },
+  { client: "mweb",       skip: true  },
+  { client: "web_safari", skip: true  },
+  { client: "tv_embedded",skip: true  },
+  { client: "",           skip: false },
+  { client: "android",    skip: false },
+  { client: "ios",        skip: false },
+];
+
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -44,7 +56,7 @@ function release() { const n = waitq.shift(); if (n) n(); else active--; }
 const fmtCache = new Map();
 const fmtInflight = new Map();
 const failCache = new Map();
-let goodClient = null;
+let goodCombo = null;
 let noJsFlag = false;
 
 function shortErr(e) {
@@ -54,28 +66,28 @@ function shortErr(e) {
   return errLine.slice(0, 220);
 }
 
-// Two attempts: A) with player_client only, B) with player_skip=webpage
-function ytdlpJson(id, client, useSkip) {
+function ytdlpJson(id, client, skip) {
   const args = ["-j", "--no-playlist", "--no-warnings", "--no-check-certificates", "--force-ipv4",
     "--socket-timeout", "15", "--retries", "2"];
   if (!noJsFlag) args.push("--js-runtimes", "node");
   if (PROXY) args.push("--proxy", PROXY);
   if (COOKIES) args.push("--cookies", "/tmp/yt-cookies.txt");
-  if (client) {
-    const ea = useSkip
-      ? "youtube:player_client=" + client + ";player_skip=webpage"
-      : "youtube:player_client=" + client;
-    args.push("--extractor-args", ea);
-  } else if (useSkip) {
+
+  // Build extractor-args
+  if (client && skip) {
+    args.push("--extractor-args", "youtube:player_client=" + client + ";player_skip=webpage");
+  } else if (client) {
+    args.push("--extractor-args", "youtube:player_client=" + client);
+  } else if (skip) {
     args.push("--extractor-args", "youtube:player_skip=webpage");
   }
-  // NO -f flag → let yt-dlp auto-pick
+
   args.push("https://www.youtube.com/watch?v=" + id);
   return new Promise((resolve, reject) => {
     execFile("yt-dlp", args, { timeout: 28000, maxBuffer: 30 * 1024 * 1024 }, (err, out, stderr) => {
       if (err) {
         const msg = (stderr || "") + " " + (err.message || "");
-        if (/no such option/i.test(msg) && !noJsFlag) { noJsFlag = true; return ytdlpJson(id, client, useSkip).then(resolve, reject); }
+        if (/no such option/i.test(msg) && !noJsFlag) { noJsFlag = true; return ytdlpJson(id, client, skip).then(resolve, reject); }
         return reject(new Error(msg));
       }
       try { resolve(JSON.parse(out.trim().split("\n")[0])); }
@@ -105,41 +117,31 @@ function pickFormats(j) {
   return { video, audio };
 }
 
-async function tryClients(id, log) {
-  const order = goodClient !== null ? [goodClient, ...CLIENTS.filter(c => c !== goodClient)] : CLIENTS;
+async function tryCombos(id, log) {
+  // If we found a good combo before, try it first
+  let order = COMBOS;
+  if (goodCombo !== null) {
+    order = [goodCombo, ...COMBOS.filter(c => !(c.client === goodCombo.client && c.skip === goodCombo.skip))];
+  }
+
   const errs = [];
-  // Pass 1: normal
-  for (const c of order) {
-    const name = c || "default";
+  for (const combo of order) {
+    const name = (combo.client || "default") + (combo.skip ? "+skip" : "");
     try {
-      const j = await ytdlpJson(id, c, false);
+      const j = await ytdlpJson(id, combo.client, combo.skip);
       const f = pickFormats(j);
-      if (!f.video) throw new Error("no video format");
-      goodClient = c;
-      if (log) log.push({ client: name, ok: true, mode: "normal", hasAudio: !!f.audio });
+      if (!f.video) throw new Error("no video format returned");
+      goodCombo = combo;
+      if (log) log.push({ combo: name, ok: true, hasAudio: !!f.audio });
+      console.log(`[yt] ✓ ${id} via ${name}`);
       return { ...f, exp: Date.now() + 20 * 60 * 1000 };
     } catch (e) {
       const m = shortErr(e);
-      if (log) log.push({ client: name, ok: false, mode: "normal", err: m });
+      errs.push(`${name}: ${m}`);
+      if (log) log.push({ combo: name, ok: false, err: m });
     }
   }
-  // Pass 2: with player_skip=webpage
-  for (const c of order) {
-    const name = c || "default";
-    try {
-      const j = await ytdlpJson(id, c, true);
-      const f = pickFormats(j);
-      if (!f.video) throw new Error("no video format (skip mode)");
-      goodClient = c;
-      if (log) log.push({ client: name, ok: true, mode: "skip-webpage", hasAudio: !!f.audio });
-      return { ...f, exp: Date.now() + 20 * 60 * 1000 };
-    } catch (e) {
-      const m = shortErr(e);
-      errs.push(`${name} (skip): ${m}`);
-      if (log) log.push({ client: name, ok: false, mode: "skip-webpage", err: m });
-    }
-  }
-  throw new Error(errs.slice(0, 3).join(" | "));
+  throw new Error(errs.join(" | "));
 }
 
 function extract(id) {
@@ -148,7 +150,7 @@ function extract(id) {
   const bad = failCache.get(id);
   if (bad && bad.exp > Date.now()) return Promise.reject(new Error(bad.msg));
   if (fmtInflight.has(id)) return fmtInflight.get(id);
-  const p = tryClients(id)
+  const p = tryCombos(id)
     .then(entry => { fmtCache.set(id, entry); return entry; })
     .catch(e => { failCache.set(id, { msg: shortErr(e), exp: Date.now() + 45000 }); throw e; })
     .finally(() => fmtInflight.delete(id));
@@ -389,28 +391,16 @@ app.get("/thumbs", async (req, res) => {
   }
 });
 
-// NEW: show raw list of formats YouTube returns
-app.get("/listformats", async (req, res) => {
-  if (!auth(req, res)) return;
-  const id = /^[\w-]{11}$/.test(String(req.query.id || "")) ? String(req.query.id) : "dQw4w9WgXcQ";
-  const args = ["--list-formats", "--no-playlist", "--no-warnings", "--no-check-certificates",
-    "--force-ipv4", "--socket-timeout", "15",
-    "--extractor-args", "youtube:player_client=ios",
-    "https://www.youtube.com/watch?v=" + id];
-  execFile("yt-dlp", args, { timeout: 25000, maxBuffer: 5 * 1024 * 1024 }, (err, out, stderr) => {
-    res.json({ id, exitCode: err ? 1 : 0, stdout: (out || "").slice(0, 5000), stderr: (stderr || "").slice(0, 2000) });
-  });
-});
-
 app.get("/debug", async (req, res) => {
   if (!auth(req, res)) return;
   const id = /^[\w-]{11}$/.test(String(req.query.id || "")) ? String(req.query.id) : "dQw4w9WgXcQ";
   fmtCache.delete(id); failCache.delete(id);
+  goodCombo = null;
   const log = [];
   let ok = false;
-  try { await tryClients(id, log); ok = true; } catch (_) {}
+  try { await tryCombos(id, log); ok = true; } catch (_) {}
   const ver = await new Promise(r => execFile("yt-dlp", ["--version"], (e, o) => r(e ? "missing: " + e.message : o.trim())));
-  res.json({ ok, id, ytdlp: ver, potProviderStarted: potUp, proxy: !!PROXY, cookies: !!COOKIES, goodClient, tried: log });
+  res.json({ ok, id, ytdlp: ver, potProviderStarted: potUp, proxy: !!PROXY, cookies: !!COOKIES, goodCombo, tried: log });
 });
 
 app.get("/health", (_q, r) => r.json({ ok: true }));

@@ -1,6 +1,4 @@
 // Vercel serverless: /api/phone?app=yt|shorts|google|wiki&q=...
-// No API keys, no login, no bot-check.
-
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 const strip = (s = "") =>
@@ -33,6 +31,7 @@ async function ytSearch(q) {
         meta: [v.viewCountText?.simpleText, v.publishedTimeText?.simpleText].filter(Boolean).join(" • "),
         length: v.lengthText?.simpleText || (isShort ? "Short" : "LIVE"),
         short: isShort,
+        thumbnail: `https://i.ytimg.com/vi/${vid}/hqdefault.jpg`,
         url: isShort ? "https://www.youtube.com/shorts/" + vid : "https://www.youtube.com/watch?v=" + vid,
       });
     }
@@ -42,16 +41,25 @@ async function ytSearch(q) {
 
 async function google(q) {
   const r = await fetch("https://html.duckduckgo.com/html/?q=" + encodeURIComponent(q), {
-    headers: { "User-Agent": UA },
+    headers: { "User-Agent": UA, "Accept": "text/html" },
   });
   const h = await r.text();
-  const re = /<a rel="nofollow" class="result__a" href="([^"]+)">([\s\S]*?)<\/a>[\s\S]*?class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
-  const out = []; let m;
-  while ((m = re.exec(h)) && out.length < 15) {
-    let u = m[1];
-    const mm = u.match(/uddg=([^&]+)/);
-    if (mm) u = decodeURIComponent(mm[1]);
-    out.push({ title: strip(m[2]), url: u, snippet: strip(m[3]) });
+  const blocks = h.split('<div class="result results_links');
+  const out = [];
+  for (let i = 1; i < blocks.length && out.length < 15; i++) {
+    const block = blocks[i];
+    const titleMatch = block.match(/<a rel="nofollow" class="result__a" href="([^"]+)">([\s\S]*?)<\/a>/);
+    const snippetMatch = block.match(/<a class="result__snippet"[^>]*>([\s\S]*?)<\/a>/);
+    if (titleMatch) {
+      let u = titleMatch[1];
+      const mm = u.match(/uddg=([^&]+)/);
+      if (mm) u = decodeURIComponent(mm[1]);
+      out.push({
+        title: strip(titleMatch[2]),
+        url: u,
+        snippet: snippetMatch ? strip(snippetMatch[1]) : ""
+      });
+    }
   }
   return { results: out };
 }

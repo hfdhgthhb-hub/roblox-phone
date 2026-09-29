@@ -18,10 +18,9 @@ const HOP = AR / ENV_RATE;
 const FMIN = 120, FMAX = 3600;
 const MAX_FF = 3;
 
-// ✅ FIXED: ios first (best for datacenter IPs), then android, tv_embedded
+// ios first (best for datacenter IPs)
 const CLIENTS = ["ios", "android", "tv_embedded", "mweb", "web_safari", ""];
-
-// ✅ FIXED: "worst video + worst audio" — always available, small, fast
+// broad fallback — worst quality but always available
 const FORMAT = "wv*+wa/w/bv*+ba/b";
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
@@ -29,7 +28,6 @@ const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const app = express();
 
-// ---------- optional PO-token provider ----------
 let potUp = false;
 if (existsSync("/opt/pot/server/build/main.js")) {
   try {
@@ -40,7 +38,6 @@ if (existsSync("/opt/pot/server/build/main.js")) {
 }
 if (COOKIES) { try { writeFileSync("/tmp/yt-cookies.txt", COOKIES); } catch (_) {} }
 
-// ---------- ffmpeg concurrency limiter ----------
 let active = 0;
 const waitq = [];
 function acquire() {
@@ -48,7 +45,6 @@ function acquire() {
 }
 function release() { const n = waitq.shift(); if (n) n(); else active--; }
 
-// ================= yt-dlp extraction =================
 const fmtCache = new Map();
 const fmtInflight = new Map();
 const failCache = new Map();
@@ -143,7 +139,6 @@ function withTimeout(p, ms, msg) {
   return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(msg)), ms))]);
 }
 
-// ================= ffmpeg helpers =================
 function ffIn(src, ss, dur) {
   const a = ["-hide_banner", "-loglevel", "error", "-nostdin", "-threads", "1"];
   if (PROXY) a.push("-http_proxy", PROXY);
@@ -168,7 +163,6 @@ function ffmpegRun(args, input) {
   });
 }
 
-// ================= video segment jobs =================
 const jobs = new Map();
 
 function evictJobs() {
@@ -216,7 +210,6 @@ function getVideoJob(id, si, vert, fmt) {
   return j;
 }
 
-// ================= audio envelope (Goertzel bands) =================
 const BANDS = Array.from({ length: NB }, (_, i) => FMIN * Math.pow(FMAX / FMIN, i / (NB - 1)));
 const HANN = Float64Array.from({ length: HOP }, (_, n) => 0.5 - 0.5 * Math.cos(2 * Math.PI * n / (HOP - 1)));
 const HANN_SUM = HANN.reduce((a, b) => a + b, 0);
@@ -271,7 +264,6 @@ setInterval(() => {
   for (const [k, v] of audioJobs) if (v.ts < old) audioJobs.delete(k);
 }, 60000);
 
-// ================= routes =================
 function auth(req, res) {
   if (SECRET && req.query.k !== SECRET) { res.status(403).json({ error: "forbidden" }); return false; }
   return true;
@@ -339,7 +331,6 @@ app.get("/frames", async (req, res) => {
   }
 });
 
-// ---------- thumbnails ----------
 const thumbCache = new Map();
 async function makeThumb(id, vert) {
   const src = `https://i.ytimg.com/vi/${id}/${vert ? "hqdefault" : "mqdefault"}.jpg`;
@@ -378,7 +369,6 @@ app.get("/thumbs", async (req, res) => {
   }
 });
 
-// ---------- diagnostics ----------
 app.get("/debug", async (req, res) => {
   if (!auth(req, res)) return;
   const id = /^[\w-]{11}$/.test(String(req.query.id || "")) ? String(req.query.id) : "dQw4w9WgXcQ";

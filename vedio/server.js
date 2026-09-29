@@ -4,21 +4,19 @@ import { spawn } from "node:child_process";
 const SECRET = process.env.SECRET || "";
 const app = express();
 
-// ============ IMAGE HOST ALLOWLIST ============
 const IMG_ALLOW = [
   "i.ytimg.com", "img.youtube.com",
   "upload.wikimedia.org", "commons.wikimedia.org",
   "covers.openlibrary.org",
-  "is1-ssl.mzstatic.com", "is2-ssl.mzstatic.com", "is3-ssl.mzstatic.com", "is4-ssl.mzstatic.com", "is5-ssl.mzstatic.com",
+  "is1-ssl.mzstatic.com", "is2-ssl.mzstatic.com", "is3-ssl.mzstatic.com",
+  "is4-ssl.mzstatic.com", "is5-ssl.mzstatic.com",
   "www.themealdb.com", "www.thecocktaildb.com",
   "flagcdn.com", "restcountries.com",
   "images.unsplash.com",
   "raw.githubusercontent.com", "avatars.githubusercontent.com",
   "images.dog.ceo", "cdn2.thecatapi.com",
   "www.artic.edu", "artic-web.imgix.net",
-  "cdn.myanimelist.net",
-  "media.rawg.io",
-  "the-trivia-api.com",
+  "cdn.myanimelist.net", "the-trivia-api.com",
 ];
 
 function isAllowedHost(u) {
@@ -29,14 +27,13 @@ function isAllowedHost(u) {
 }
 
 function auth(req, res) {
-  if (SECRET && req.query.k !== SECRET) {
+  if (!SECRET || req.query.k !== SECRET) {
     res.status(403).json({ error: "forbidden" });
     return false;
   }
   return true;
 }
 
-// ============ IMAGE PROXY ============
 app.get("/img", async (req, res) => {
   if (!auth(req, res)) return;
   try {
@@ -48,11 +45,8 @@ app.get("/img", async (req, res) => {
 
     const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(8000) });
     if (!r.ok) return res.json({ error: "fetch " + r.status });
-
-    // Size cap — refuse absurd images before loading into memory
     const cl = parseInt(r.headers.get("content-length") || "0", 10);
     if (cl > 12 * 1024 * 1024) return res.json({ error: "too large" });
-
     const input = Buffer.from(await r.arrayBuffer());
 
     const vf = "scale=" + W + ":" + H + ":force_original_aspect_ratio=decrease,pad=" + W + ":" + H + ":(ow-iw)/2:(oh-ih)/2:black,format=rgba";

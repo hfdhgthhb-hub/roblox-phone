@@ -1,74 +1,109 @@
-local HttpService = game:GetService("HttpService")
-local Players = game:GetService("Players")
-local RS = game:GetService("ReplicatedStorage")
+// Vercel serverless: /api/phone  (GitHub: api/phone.js)
+// Always answers HTTP 200 so Roblox never shows "HTTP 500".
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
-local PROXY   = "https://roblox-phone.vercel.app/api/phone"
-local VPROXY  = "https://roblox-phone.onrender.com"
-local VKEY    = "12345"
+const ALLOW = [
+  "hn.algolia.com", "api.coinpaprika.com", "api.coinbase.com", "api.frankfurter.app", "api.frankfurter.dev",
+  "en.wikipedia.org", "api.dictionaryapi.dev", "pokeapi.co", "openlibrary.org", "covers.openlibrary.org",
+  "itunes.apple.com", "www.themealdb.com", "www.thecocktaildb.com", "restcountries.com",
+  "ll.thespacedevs.com", "api.artic.edu", "www.artic.edu", "api.jikan.moe", "api.github.com",
+  "dog.ceo", "api.thecatapi.com", "official-joke-api.appspot.com", "dummyjson.com",
+  "the-trivia-api.com", "opentdb.com", "geocoding-api.open-meteo.com", "api.open-meteo.com",
+  "gen.pollinations.ai", "text.pollinations.ai",
+];
 
-local ALLOWED = {
-	yt=true, shorts=true, google=true, wiki=true, ai=true,
-	weather=true, crypto=true, dict=true, pokemon=true, trivia=true,
+const strip = (s = "") =>
+  String(s).replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&#x27;/g, "'").replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ").trim();
+
+// ---------- YouTube search (InnerTube) ----------
+async function ytSearch(q) {
+  try {
+    const r = await fetch("https://www.youtube.com/youtubei/v1/search?prettyPrint=false", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "User-Agent": UA, "Accept-Language": "en-US,en;q=0.9" },
+      body: JSON.stringify({ context: { client: { clientName: "WEB", clientVersion: "2.20250101.00.00", hl: "en", gl: "US" } }, query: q }),
+    });
+    const j = await r.json();
+    const secs = j?.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents || [];
+    const out = [];
+    for (const s of secs) {
+      for (const it of s.itemSectionRenderer?.contents || []) {
+        const v = it.videoRenderer || it.reelItemRenderer;
+        if (!v || !v.videoId || v.videoId.length !== 11) continue;
+        out.push({
+          id: v.videoId,
+          title: v.title?.runs?.[0]?.text || v.headline?.simpleText || "",
+          sub: v.ownerText?.runs?.[0]?.text || v.shortBylineText?.runs?.[0]?.text || "",
+          meta: [v.viewCountText?.simpleText, v.publishedTimeText?.simpleText].filter(Boolean).join(" - "),
+          length: v.lengthText?.simpleText || "",
+          thumbnail: "https://i.ytimg.com/vi/" + v.videoId + "/mqdefault.jpg",
+        });
+      }
+    }
+    if (!out.length) return { results: [], note: "YouTube returned no results" };
+    return { results: out.slice(0, 20) };
+  } catch (e) {
+    return { results: [], note: "YouTube search unavailable" };
+  }
 }
 
-local rf  = RS:WaitForChild("Mn")
-local vrf = RS:WaitForChild("MnVideo")
+// ---------- Google search: Serper if key exists, else DuckDuckGo HTML ----------
+async function google(q) {
+  const key = process.env.SERPER_API_KEY;
+  if (key) {
+    try {
+      const r = await fetch("https://google.serper.dev/search", {
+        method: "POST",
+        headers: { "X-API-KEY": key, "Content-Type": "application/json" },
+        body: JSON.stringify({ q, num: 15 }),
+      });
+      if (r.ok) {
+        const j = await r.json();
+        const results = (j.organic || []).map(x => ({ title: strip(x.title), url: x.link, snippet: strip(x.snippet || "") }));
+        if (results.length) return { results };
+      }
+    } catch (e) {}
+  }
+  try {
+    const r = await fetch("https://html.duckduckgo.com/html/?q=" + encodeURIComponent(q), { headers: { "User-Agent": UA } });
+    const html = await r.text();
+    const results = [];
+    const re = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
+    let m;
+    while ((m = re.exec(html)) && results.length < 15) {
+      let url = m[1];
+      const u = url.match(/uddg=([^&]+)/);
+      if (u) url = decodeURIComponent(u[1]);
+      results.push({ title: strip(m[2]), url, snippet: strip(m[3]) });
+    }
+    if (results.length) return { results };
+  } catch (e) {}
+  return { results: [], note: "Search unavailable right now" };
+}
 
-local function getJson(url)
-	local ok, body = pcall(HttpService.GetAsync, HttpService, url)
-	if not ok then return { error = "network" } end
-	local ok2, data = pcall(HttpService.JSONDecode, HttpService, body)
-	if not ok2 then return { error = "bad json" } end
-	return data
-end
+// ---------- generic allow-listed proxy for hosts that block Roblox IPs ----------
+async function proxy(u, res) {
+  let url;
+  try { url = new URL(u); } catch (e) { return res.status(400).send("bad url"); }
+  if (url.protocol !== "https:" || !ALLOW.some(h => url.hostname === h)) return res.status(403).send("host not allowed");
+  const r = await fetch(url.toString(), { headers: { "User-Agent": UA, "Accept": "application/json,text/plain,*/*" }, redirect: "follow" });
+  const body = await r.text();
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  return res.status(r.ok ? 200 : r.status).send(body);
+}
 
-local function toBuffer(b64)
-	if type(b64) ~= "string" or b64 == "" then return nil end
-	local ok, raw = pcall(HttpService.Base64Decode, HttpService, b64)
-	if not ok then return nil end
-	return buffer.fromstring(raw)
-end
-
--- keep Render awake (every 4 minutes)
-task.spawn(function()
-	while true do
-		pcall(HttpService.GetAsync, HttpService, VPROXY .. "/health")
-		task.wait(240)
-	end
-end)
-
-local last = {}
-rf.OnServerInvoke = function(plr, app, q, m)
-	if typeof(app) ~= "string" or not ALLOWED[app] then return nil end
-	q = tostring(q or ""):sub(1, 200)
-	local now = os.clock()
-	if last[plr] and now - last[plr] < 0.4 then return { error = "slow down" } end
-	last[plr] = now
-	local url = PROXY .. "?app=" .. app .. "&q=" .. HttpService:UrlEncode(q)
-	if m then url = url .. "&m=" .. HttpService:UrlEncode(m) end
-	return getJson(url)
-end
-
-local vlast = {}
-vrf.OnServerInvoke = function(plr, action, arg1, arg2, arg3)
-	local now = os.clock()
-	if vlast[plr] and now - vlast[plr] < 0.15 then return { error = "slow" } end
-	vlast[plr] = now
-
-	if action == "img" then
-		local url, w, h = arg1, tonumber(arg2) or 128, tonumber(arg3) or 128
-		if typeof(url) ~= "string" or not url:match("^https://") then return nil end
-		w = math.clamp(w, 32, 256)
-		h = math.clamp(h, 32, 256)
-		local data = getJson(string.format("%s/img?url=%s&w=%d&h=%d&k=%s",
-			VPROXY, HttpService:UrlEncode(url), w, h, HttpService:UrlEncode(VKEY)))
-		if data.error then return { error = data.error } end
-		return { w = data.w, h = data.h, data = toBuffer(data.data) }
-	end
-	return nil
-end
-
-Players.PlayerRemoving:Connect(function(p)
-	last[p] = nil
-	vlast[p] = nil
-end)
+export default async function handler(req, res) {
+  res.setHeader("Cache-Control", "public, max-age=30");
+  const { app, q, u } = req.query;
+  try {
+    if (app === "fetch") return await proxy(String(u || ""), res);
+    res.setHeader("Content-Type", "application/json");
+    if (app === "yt") return res.status(200).json(await ytSearch(q || "trending"));
+    if (app === "shorts") return res.status(200).json(await ytSearch("#shorts " + (q || "viral")));
+    if (app === "google") return res.status(200).json(await google(q || "roblox"));
+    return res.status(200).json({ results: [], note: "unknown app" });
+  } catch (e) {
+    return res.status(200).json({ results: [], note: "server error" });
+  }
+}

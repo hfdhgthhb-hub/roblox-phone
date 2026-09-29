@@ -1,5 +1,5 @@
 // Vercel serverless: /api/phone  (GitHub: api/phone.js)
-// Always answers HTTP 200 so Roblox never shows "HTTP 500".
+// Always answers HTTP 200 so Roblox never shows an HTTP error.
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 const ALLOW = [
@@ -82,7 +82,32 @@ async function google(q) {
   return { results: [], note: "Search unavailable right now" };
 }
 
-// ---------- generic allow-listed proxy for hosts that block Roblox IPs ----------
+// ---------- AI chat (Pollinations, free, no key) ----------
+const AI_MODELS = { gpt: "openai", gpt4mini: "openai", claude: "claude-airforce", llama: "llama", mistral: "mistral", gemini: "gemini", o3mini: "openai" };
+async function ai(msg, m) {
+  const prompt = (msg || "hi").slice(0, 1500);
+  const model = AI_MODELS[m] || "openai";
+  const sys = encodeURIComponent(
+    "You are ChatGPT inside a Roblox game. Reply briefly in plain text, no markdown. " +
+    "If the user asks for anything 18+, illegal, hacking, cheats, exploits, or Roblox script help, politely decline and say 'Request declined.'"
+  );
+  const tries = [
+    ["https://gen.pollinations.ai/text/" + encodeURIComponent(prompt) + "?model=" + model + "&system=" + sys, 18000],
+    ["https://text.pollinations.ai/" + encodeURIComponent(prompt) + "?model=" + model + "&system=" + sys, 9000],
+    ["https://text.pollinations.ai/" + encodeURIComponent(prompt) + "?system=" + sys, 9000],
+  ];
+  for (const [u, ms] of tries) {
+    try {
+      const r = await fetch(u, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(ms) });
+      if (!r.ok) continue;
+      const t = (await r.text()).trim();
+      if (t && !t.startsWith('{"error')) return { reply: t.slice(0, 1500) };
+    } catch (e) {}
+  }
+  throw new Error("AI is busy, try again in a moment");
+}
+
+// ---------- generic allow-listed proxy ----------
 async function proxy(u, res) {
   let url;
   try { url = new URL(u); } catch (e) { return res.status(400).send("bad url"); }
@@ -95,15 +120,16 @@ async function proxy(u, res) {
 
 export default async function handler(req, res) {
   res.setHeader("Cache-Control", "public, max-age=30");
-  const { app, q, u } = req.query;
+  const { app, q, u, m } = req.query;
   try {
     if (app === "fetch") return await proxy(String(u || ""), res);
     res.setHeader("Content-Type", "application/json");
-    if (app === "yt") return res.status(200).json(await ytSearch(q || "trending"));
+    if (app === "yt")     return res.status(200).json(await ytSearch(q || "trending"));
     if (app === "shorts") return res.status(200).json(await ytSearch("#shorts " + (q || "viral")));
     if (app === "google") return res.status(200).json(await google(q || "roblox"));
+    if (app === "ai")     return res.status(200).json(await ai(q || "", String(m || "")));
     return res.status(200).json({ results: [], note: "unknown app" });
   } catch (e) {
     return res.status(200).json({ results: [], note: "server error" });
   }
-}
+    }

@@ -2,7 +2,6 @@ import express from "express";
 import { spawn, execFile } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
 
-// ================= CONFIG =================
 const SECRET  = process.env.SECRET || "";
 const PROXY   = process.env.YT_PROXY || "";
 const COOKIES = process.env.YT_COOKIES || "";
@@ -18,11 +17,8 @@ const HOP = AR / ENV_RATE;
 const FMIN = 120, FMAX = 3600;
 const MAX_FF = 3;
 
-// ios first (best for datacenter IPs)
-const CLIENTS = ["ios", "android", "tv_embedded", "mweb", "web_safari", ""];
-// broad fallback — worst quality but always available
-const FORMAT = "wv*+wa/w/bv*+ba/b";
-
+// Expanded client list
+const CLIENTS = ["ios", "android", "tv_embedded", "mweb", "web_safari", "web", "android_vr", "tv", ""];
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -58,19 +54,28 @@ function shortErr(e) {
   return errLine.slice(0, 220);
 }
 
-function ytdlpJson(id, client) {
+// Two attempts: A) with player_client only, B) with player_skip=webpage
+function ytdlpJson(id, client, useSkip) {
   const args = ["-j", "--no-playlist", "--no-warnings", "--no-check-certificates", "--force-ipv4",
     "--socket-timeout", "15", "--retries", "2"];
   if (!noJsFlag) args.push("--js-runtimes", "node");
   if (PROXY) args.push("--proxy", PROXY);
   if (COOKIES) args.push("--cookies", "/tmp/yt-cookies.txt");
-  if (client) args.push("--extractor-args", "youtube:player_client=" + client);
-  args.push("-f", FORMAT, "https://www.youtube.com/watch?v=" + id);
+  if (client) {
+    const ea = useSkip
+      ? "youtube:player_client=" + client + ";player_skip=webpage"
+      : "youtube:player_client=" + client;
+    args.push("--extractor-args", ea);
+  } else if (useSkip) {
+    args.push("--extractor-args", "youtube:player_skip=webpage");
+  }
+  // NO -f flag → let yt-dlp auto-pick
+  args.push("https://www.youtube.com/watch?v=" + id);
   return new Promise((resolve, reject) => {
     execFile("yt-dlp", args, { timeout: 28000, maxBuffer: 30 * 1024 * 1024 }, (err, out, stderr) => {
       if (err) {
         const msg = (stderr || "") + " " + (err.message || "");
-        if (/no such option/i.test(msg) && !noJsFlag) { noJsFlag = true; return ytdlpJson(id, client).then(resolve, reject); }
+        if (/no such option/i.test(msg) && !noJsFlag) { noJsFlag = true; return ytdlpJson(id, client, useSkip).then(resolve, reject); }
         return reject(new Error(msg));
       }
       try { resolve(JSON.parse(out.trim().split("\n")[0])); }
@@ -103,22 +108,38 @@ function pickFormats(j) {
 async function tryClients(id, log) {
   const order = goodClient !== null ? [goodClient, ...CLIENTS.filter(c => c !== goodClient)] : CLIENTS;
   const errs = [];
+  // Pass 1: normal
   for (const c of order) {
     const name = c || "default";
     try {
-      const j = await ytdlpJson(id, c);
+      const j = await ytdlpJson(id, c, false);
       const f = pickFormats(j);
       if (!f.video) throw new Error("no video format");
       goodClient = c;
-      if (log) log.push({ client: name, ok: true, hasAudio: !!f.audio });
+      if (log) log.push({ client: name, ok: true, mode: "normal", hasAudio: !!f.audio });
       return { ...f, exp: Date.now() + 20 * 60 * 1000 };
     } catch (e) {
       const m = shortErr(e);
-      errs.push(`${name}: ${m}`);
-      if (log) log.push({ client: name, ok: false, err: m });
+      if (log) log.push({ client: name, ok: false, mode: "normal", err: m });
     }
   }
-  throw new Error(errs.join(" | "));
+  // Pass 2: with player_skip=webpage
+  for (const c of order) {
+    const name = c || "default";
+    try {
+      const j = await ytdlpJson(id, c, true);
+      const f = pickFormats(j);
+      if (!f.video) throw new Error("no video format (skip mode)");
+      goodClient = c;
+      if (log) log.push({ client: name, ok: true, mode: "skip-webpage", hasAudio: !!f.audio });
+      return { ...f, exp: Date.now() + 20 * 60 * 1000 };
+    } catch (e) {
+      const m = shortErr(e);
+      errs.push(`${name} (skip): ${m}`);
+      if (log) log.push({ client: name, ok: false, mode: "skip-webpage", err: m });
+    }
+  }
+  throw new Error(errs.slice(0, 3).join(" | "));
 }
 
 function extract(id) {
@@ -164,7 +185,6 @@ function ffmpegRun(args, input) {
 }
 
 const jobs = new Map();
-
 function evictJobs() {
   if (jobs.size <= 14) return;
   const sorted = [...jobs.values()].filter(j => j.done).sort((a, b) => a.ts - b.ts);
@@ -367,6 +387,19 @@ app.get("/thumbs", async (req, res) => {
   } catch (e) {
     res.json({ error: shortErr(e) });
   }
+});
+
+// NEW: show raw list of formats YouTube returns
+app.get("/listformats", async (req, res) => {
+  if (!auth(req, res)) return;
+  const id = /^[\w-]{11}$/.test(String(req.query.id || "")) ? String(req.query.id) : "dQw4w9WgXcQ";
+  const args = ["--list-formats", "--no-playlist", "--no-warnings", "--no-check-certificates",
+    "--force-ipv4", "--socket-timeout", "15",
+    "--extractor-args", "youtube:player_client=ios",
+    "https://www.youtube.com/watch?v=" + id];
+  execFile("yt-dlp", args, { timeout: 25000, maxBuffer: 5 * 1024 * 1024 }, (err, out, stderr) => {
+    res.json({ id, exitCode: err ? 1 : 0, stdout: (out || "").slice(0, 5000), stderr: (stderr || "").slice(0, 2000) });
+  });
 });
 
 app.get("/debug", async (req, res) => {

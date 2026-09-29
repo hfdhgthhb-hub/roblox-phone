@@ -12,7 +12,7 @@ function auth(req, res) {
   return true;
 }
 
-// ============ Image proxy (thumbnails from any HTTPS URL) ============
+// ============ Image proxy ============
 app.get("/img", async (req, res) => {
   try {
     if (!auth(req, res)) return;
@@ -25,7 +25,7 @@ app.get("/img", async (req, res) => {
     if (!r.ok) return res.json({ error: "fetch " + r.status });
     const input = Buffer.from(await r.arrayBuffer());
 
-    const vf = `scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:black,format=rgba`;
+    const vf = "scale=" + W + ":" + H + ":force_original_aspect_ratio=decrease,pad=" + W + ":" + H + ":(ow-iw)/2:(oh-ih)/2:black,format=rgba";
     const out2 = await new Promise((resolve, reject) => {
       const ff = spawn("ffmpeg", ["-loglevel", "error", "-i", "pipe:0", "-vf", vf,
         "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"]);

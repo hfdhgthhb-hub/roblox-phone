@@ -1,28 +1,54 @@
-// Vercel serverless: /api/phone  (GitHub: api/phone.js)
-// Always answers HTTP 200 so Roblox never shows an HTTP error.
+// Vercel serverless: /api/phone — FIXED
+// Adds native handlers for wiki/weather/crypto/dict/pokemon/trivia.
+// Fixes strip() numeric-entity decoding. Always answers HTTP 200.
+
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 const ALLOW = [
-  "hn.algolia.com", "api.coinpaprika.com", "api.coinbase.com", "api.frankfurter.app", "api.frankfurter.dev",
-  "en.wikipedia.org", "api.dictionaryapi.dev", "pokeapi.co", "openlibrary.org", "covers.openlibrary.org",
-  "itunes.apple.com", "www.themealdb.com", "www.thecocktaildb.com", "restcountries.com",
-  "ll.thespacedevs.com", "api.artic.edu", "www.artic.edu", "api.jikan.moe", "api.github.com",
-  "dog.ceo", "api.thecatapi.com", "official-joke-api.appspot.com", "dummyjson.com",
-  "the-trivia-api.com", "opentdb.com", "geocoding-api.open-meteo.com", "api.open-meteo.com",
+  "hn.algolia.com", "api.coinpaprika.com", "api.coinbase.com",
+  "api.frankfurter.app", "api.frankfurter.dev",
+  "en.wikipedia.org", "api.dictionaryapi.dev", "pokeapi.co",
+  "openlibrary.org", "covers.openlibrary.org",
+  "itunes.apple.com", "www.themealdb.com", "www.thecocktaildb.com",
+  "restcountries.com", "ll.thespacedevs.com",
+  "api.artic.edu", "www.artic.edu",
+  "api.jikan.moe", "api.github.com",
+  "dog.ceo", "api.thecatapi.com",
+  "official-joke-api.appspot.com", "dummyjson.com",
+  "the-trivia-api.com", "opentdb.com",
+  "geocoding-api.open-meteo.com", "api.open-meteo.com",
   "gen.pollinations.ai", "text.pollinations.ai",
 ];
 
-const strip = (s = "") =>
-  String(s).replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&#x27;/g, "'").replace(/&#39;/g, "'")
-    .replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ").trim();
+// ---------- HTML strip (handles named + numeric entities) ----------
+const ENTITIES = {
+  "&amp;": "&", "&quot;": '"', "&#x27;": "'", "&#39;": "'",
+  "&lt;": "<", "&gt;": ">", "&nbsp;": " ",
+  "&hellip;": "...", "&mdash;": "\u2014", "&ndash;": "\u2013",
+  "&rsquo;": "'", "&lsquo;": "'", "&ldquo;": '"', "&rdquo;": '"',
+};
+function strip(s = "") {
+  let out = String(s).replace(/<[^>]+>/g, "");
+  out = out.replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)));
+  out = out.replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)));
+  for (const [k, v] of Object.entries(ENTITIES)) out = out.split(k).join(v);
+  return out.trim();
+}
 
-// ---------- YouTube search (InnerTube) ----------
+const JSON_HEADERS = { "User-Agent": UA, "Accept": "application/json" };
+
+// ============================================================
+// YouTube search (InnerTube) — same as before, kept as-is
+// ============================================================
 async function ytSearch(q) {
   try {
     const r = await fetch("https://www.youtube.com/youtubei/v1/search?prettyPrint=false", {
       method: "POST",
       headers: { "Content-Type": "application/json", "User-Agent": UA, "Accept-Language": "en-US,en;q=0.9" },
-      body: JSON.stringify({ context: { client: { clientName: "WEB", clientVersion: "2.20250101.00.00", hl: "en", gl: "US" } }, query: q }),
+      body: JSON.stringify({
+        context: { client: { clientName: "WEB", clientVersion: "2.20250101.00.00", hl: "en", gl: "US" } },
+        query: q,
+      }),
     });
     const j = await r.json();
     const secs = j?.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents || [];
@@ -37,7 +63,7 @@ async function ytSearch(q) {
           sub: v.ownerText?.runs?.[0]?.text || v.shortBylineText?.runs?.[0]?.text || "",
           meta: [v.viewCountText?.simpleText, v.publishedTimeText?.simpleText].filter(Boolean).join(" - "),
           length: v.lengthText?.simpleText || "",
-          thumbnail: "https://i.ytimg.com/vi/" + v.videoId + "/mqdefault.jpg",
+          thumb: "https://i.ytimg.com/vi/" + v.videoId + "/mqdefault.jpg",
         });
       }
     }
@@ -48,7 +74,9 @@ async function ytSearch(q) {
   }
 }
 
-// ---------- Google search: Serper if key exists, else DuckDuckGo HTML ----------
+// ============================================================
+// Google (Serper, fallback DDG HTML)
+// ============================================================
 async function google(q) {
   const key = process.env.SERPER_API_KEY;
   if (key) {
@@ -60,10 +88,12 @@ async function google(q) {
       });
       if (r.ok) {
         const j = await r.json();
-        const results = (j.organic || []).map(x => ({ title: strip(x.title), url: x.link, snippet: strip(x.snippet || "") }));
+        const results = (j.organic || []).map(x => ({
+          title: strip(x.title), url: x.link, sub: strip(x.snippet || ""),
+        }));
         if (results.length) return { results };
       }
-    } catch (e) {}
+    } catch (_) {}
   }
   try {
     const r = await fetch("https://html.duckduckgo.com/html/?q=" + encodeURIComponent(q), { headers: { "User-Agent": UA } });
@@ -75,15 +105,21 @@ async function google(q) {
       let url = m[1];
       const u = url.match(/uddg=([^&]+)/);
       if (u) url = decodeURIComponent(u[1]);
-      results.push({ title: strip(m[2]), url, snippet: strip(m[3]) });
+      results.push({ title: strip(m[2]), url, sub: strip(m[3]) });
     }
     if (results.length) return { results };
-  } catch (e) {}
+  } catch (_) {}
   return { results: [], note: "Search unavailable right now" };
 }
 
-// ---------- AI chat (Pollinations, free, no key) ----------
-const AI_MODELS = { gpt: "openai", gpt4mini: "openai", claude: "claude-airforce", llama: "llama", mistral: "mistral", gemini: "gemini", o3mini: "openai" };
+// ============================================================
+// AI (Pollinations, free, no key)
+// ============================================================
+const AI_MODELS = {
+  gpt: "openai", gpt4mini: "openai", o3mini: "openai",
+  claude: "claude-airforce",
+  llama: "llama", mistral: "mistral", gemini: "gemini",
+};
 async function ai(msg, m) {
   const prompt = (msg || "hi").slice(0, 1500);
   const model = AI_MODELS[m] || "openai";
@@ -102,34 +138,180 @@ async function ai(msg, m) {
       if (!r.ok) continue;
       const t = (await r.text()).trim();
       if (t && !t.startsWith('{"error')) return { reply: t.slice(0, 1500) };
-    } catch (e) {}
+    } catch (_) {}
   }
   throw new Error("AI is busy, try again in a moment");
 }
 
-// ---------- generic allow-listed proxy ----------
+// ============================================================
+// NEW NATIVE HANDLERS
+// ============================================================
+
+// ---------- Wikipedia ----------
+async function wiki(q) {
+  q = q || "Roblox";
+  const r = await fetch(
+    "https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&srlimit=15&srsearch=" + encodeURIComponent(q),
+    { headers: JSON_HEADERS }
+  );
+  const j = await r.json();
+  const items = (j?.query?.search || []).map(x => ({
+    title: x.title,
+    sub: strip(x.snippet),
+    meta: "en.wikipedia.org",
+    url: "https://en.wikipedia.org/wiki/" + encodeURIComponent((x.title || "").replace(/ /g, "_")),
+  }));
+  return { results: items };
+}
+
+// ---------- Weather ----------
+async function weather(q) {
+  q = q || "London";
+  const geoR = await fetch(
+    "https://geocoding-api.open-meteo.com/v1/search?count=1&name=" + encodeURIComponent(q),
+    { headers: JSON_HEADERS }
+  );
+  const geo = await geoR.json();
+  if (!geo.results || !geo.results.length) return { results: [], note: "City not found" };
+  const g = geo.results[0];
+  const wR = await fetch(
+    `https://api.open-meteo.com/v1/forecast?latitude=${g.latitude}&longitude=${g.longitude}&current_weather=true`,
+    { headers: JSON_HEADERS }
+  );
+  const w = await wR.json();
+  const cw = w.current_weather || {};
+  return {
+    results: [{
+      title: `Now in ${g.name}, ${g.country || ""}`,
+      sub: `${cw.temperature ?? "?"}°C · wind ${cw.windspeed ?? "?"} km/h`,
+      meta: `weather code ${cw.weathercode ?? "?"}`,
+    }],
+  };
+}
+
+// ---------- Crypto (CoinPaprika) ----------
+async function crypto() {
+  try {
+    const r = await fetch("https://api.coinpaprika.com/v1/tickers?limit=15", { headers: JSON_HEADERS });
+    const arr = await r.json();
+    const items = (Array.isArray(arr) ? arr : []).map(x => {
+      const price = x?.quotes?.USD?.price;
+      const change = x?.quotes?.USD?.percent_change_24h;
+      const changeStr = (change != null) ? `${change >= 0 ? "+" : ""}${change.toFixed(2)}%` : "";
+      return {
+        title: `${x.name} (${x.symbol})`,
+        sub: price != null ? `$${price.toFixed(2)} ${changeStr}` : "—",
+        meta: `rank ${x.rank ?? "?"}`,
+      };
+    });
+    return { results: items };
+  } catch (e) {
+    return { results: [], note: "Crypto data unavailable" };
+  }
+}
+
+// ---------- Dictionary ----------
+async function dict(q) {
+  q = q || "hello";
+  const r = await fetch("https://api.dictionaryapi.dev/api/v2/entries/en/" + encodeURIComponent(q), { headers: JSON_HEADERS });
+  if (!r.ok) return { results: [], note: "Word not found" };
+  const arr = await r.json();
+  const items = [];
+  for (const entry of (Array.isArray(arr) ? arr : [])) {
+    for (const m of (entry.meanings || [])) {
+      for (const d of (m.definitions || []).slice(0, 3)) {
+        items.push({
+          title: `${entry.word} (${m.partOfSpeech || "?"})`,
+          sub: strip(d.definition || ""),
+          meta: strip(d.example || ""),
+        });
+      }
+    }
+  }
+  return { results: items.slice(0, 20) };
+}
+
+// ---------- Pokemon ----------
+async function pokemon(q) {
+  q = (q || "pikachu").toLowerCase().trim();
+  const r = await fetch("https://pokeapi.co/api/v2/pokemon/" + encodeURIComponent(q), { headers: JSON_HEADERS });
+  if (!r.ok) return { results: [], note: "Pokemon not found" };
+  const j = await r.json();
+  const types = (j.types || []).map(t => t.type.name).join(", ");
+  let img = j?.sprites?.front_default;
+  const art = j?.sprites?.other?.["official-artwork"]?.front_default;
+  if (art) img = art;
+  return {
+    results: [{
+      title: `${j.name} #${j.id}`,
+      sub: `types: ${types}`,
+      meta: `height ${j.height} · weight ${j.weight}`,
+      img,
+      big: true,
+    }],
+  };
+}
+
+// ---------- Trivia (special shape: {question, correct, wrong, category}) ----------
+async function trivia() {
+  const r = await fetch("https://opentdb.com/api.php?amount=1&type=multiple", { headers: { "User-Agent": UA } });
+  const j = await r.json();
+  if (!j.results || !j.results[0]) return { error: "No trivia available" };
+  const q = j.results[0];
+  return {
+    question: strip(q.question),
+    correct: strip(q.correct_answer),
+    wrong: (q.incorrect_answers || []).map(strip),
+    category: strip(q.category),
+  };
+}
+
+// ============================================================
+// Allow-listed proxy (used by PhoneServer for apps without native handlers)
+// ============================================================
 async function proxy(u, res) {
   let url;
-  try { url = new URL(u); } catch (e) { return res.status(400).send("bad url"); }
-  if (url.protocol !== "https:" || !ALLOW.some(h => url.hostname === h)) return res.status(403).send("host not allowed");
-  const r = await fetch(url.toString(), { headers: { "User-Agent": UA, "Accept": "application/json,text/plain,*/*" }, redirect: "follow" });
+  try { url = new URL(u); } catch (_) { return res.status(400).send("bad url"); }
+  if (url.protocol !== "https:" || !ALLOW.some(h => url.hostname === h)) {
+    return res.status(403).send("host not allowed");
+  }
+  const r = await fetch(url.toString(), {
+    headers: { "User-Agent": UA, "Accept": "application/json,text/plain,*/*" },
+    redirect: "follow",
+  });
   const body = await r.text();
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
   return res.status(r.ok ? 200 : r.status).send(body);
 }
 
+// ============================================================
+// MAIN
+// ============================================================
 export default async function handler(req, res) {
   res.setHeader("Cache-Control", "public, max-age=30");
   const { app, q, u, m } = req.query;
+
   try {
+    // Raw proxy path returns text/plain, not JSON
     if (app === "fetch") return await proxy(String(u || ""), res);
+
     res.setHeader("Content-Type", "application/json");
-    if (app === "yt")     return res.status(200).json(await ytSearch(q || "trending"));
-    if (app === "shorts") return res.status(200).json(await ytSearch("#shorts " + (q || "viral")));
-    if (app === "google") return res.status(200).json(await google(q || "roblox"));
-    if (app === "ai")     return res.status(200).json(await ai(q || "", String(m || "")));
-    return res.status(200).json({ results: [], note: "unknown app" });
+
+    if (app === "yt")      return res.status(200).json(await ytSearch(q || "trending"));
+    if (app === "shorts")  return res.status(200).json(await ytSearch("#shorts " + (q || "viral")));
+    if (app === "google")  return res.status(200).json(await google(q || "roblox"));
+    if (app === "ai")      return res.status(200).json(await ai(q || "", String(m || "")));
+
+    // New native handlers
+    if (app === "wiki")    return res.status(200).json(await wiki(q || ""));
+    if (app === "weather") return res.status(200).json(await weather(q || ""));
+    if (app === "crypto")  return res.status(200).json(await crypto());
+    if (app === "dict")    return res.status(200).json(await dict(q || ""));
+    if (app === "pokemon") return res.status(200).json(await pokemon(q || ""));
+    if (app === "trivia")  return res.status(200).json(await trivia());
+
+    return res.status(200).json({ results: [], note: "unknown app: " + String(app || "") });
   } catch (e) {
-    return res.status(200).json({ results: [], note: "server error" });
+    return res.status(200).json({ results: [], note: "server error", error: String(e.message || e).slice(0, 200) });
   }
-    }
+      }

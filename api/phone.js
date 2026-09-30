@@ -1,9 +1,10 @@
-// Vercel serverless: /api/phone  (v4)  -> GitHub file: api/phone.js
+// Vercel serverless: /api/phone  (v6)  -> GitHub file: api/phone.js
 // YouTube: Data API (optional key) -> InnerTube WEB -> InnerTube ANDROID -> Piped
 // Google : Serper -> Brave -> DuckDuckGo -> Wikipedia fallback
+// Page   : r.jina.ai reader (optional JINA_KEY)
 // AI     : races every provider you have keys for + keyless ones
 // Optional Vercel env vars: YT_KEY, SERPER_API_KEY, BRAVE_KEY, GROQ_KEY,
-//   OPENROUTER_KEY, OPENROUTER_MODEL, GEMINI_KEY, POLLINATIONS_KEY, SECRET
+//   OPENROUTER_KEY, OPENROUTER_MODEL, GEMINI_KEY, POLLINATIONS_KEY, JINA_KEY, SECRET
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
@@ -183,7 +184,7 @@ async function google(q) {
   if (sk) {
     try {
       const j = await jpost("https://google.serper.dev/search", { q: q, num: 15 }, { "X-API-KEY": sk }, 6000);
-      const results = (j.organic || []).map((x) => ({ title: strip(x.title), url: x.link, meta: x.link, sub: strip(x.snippet || "") }));
+      const results = (j.organic || []).map((x) => ({ title: strip(x.title), url: x.link, meta: x.link, sub: strip(x.snippet || ""), thumb: x.imageUrl || "" }));
       if (results.length) return { results: results };
     } catch (_) {}
   }
@@ -220,6 +221,50 @@ async function google(q) {
     }
   } catch (_) {}
   return { results: [], note: "Search unavailable" };
+}
+
+// ---------------------------------------------------------------- page reader (Google web view)
+function parsePage(md) {
+  const title = ((md.match(/^Title:\s*(.+)$/m) || [])[1] || "").trim();
+  const i = md.indexOf("Markdown Content:");
+  if (i >= 0) md = md.slice(i + 17);
+  const blocks = [], links = [], seen = {};
+  let imgs = 0;
+  for (const raw of md.split("\n")) {
+    let l = raw.trim();
+    if (!l) continue;
+    const im = l.match(/!\[([^\]]*)\]\((https:\/\/[^)\s]+)/);
+    if (im) {
+      if (imgs < 5 && !/\.(svg|gif)(\?|$)/i.test(im[2])) { imgs++; blocks.push({ t: "img", url: im[2], text: strip(im[1]) }); }
+      continue;
+    }
+    let m;
+    const lre = /\[([^\]]{3,80})\]\((https?:\/\/[^)\s]+)\)/g;
+    while ((m = lre.exec(l)) && links.length < 20) {
+      if (!seen[m[2]]) { seen[m[2]] = 1; links.push({ text: strip(m[1]), url: m[2] }); }
+    }
+    l = l.replace(/!\[[^\]]*\]\([^)]*\)/g, "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[*_`]/g, "").trim();
+    const h = l.match(/^#{1,4}\s+(.*)/);
+    if (h) { if (h[1].length > 1) blocks.push({ t: "h", text: h[1].slice(0, 200) }); }
+    else if (l.length >= 30) blocks.push({ t: "p", text: l.replace(/^[-*]\s+/, "- ").slice(0, 500) });
+    if (blocks.length >= 70) break;
+  }
+  return { title: title, blocks: blocks, links: links };
+}
+async function page(u) {
+  let url;
+  try { url = new URL(u); } catch (_) { return { error: "bad url" }; }
+  if (!/^https?:$/.test(url.protocol)) return { error: "bad url" };
+  const h = { "Accept": "text/plain", "X-Return-Format": "markdown", "User-Agent": UA };
+  if (env("JINA_KEY")) h.Authorization = "Bearer " + env("JINA_KEY");
+  const r = await fetch("https://r.jina.ai/" + url.toString(), { headers: h, signal: AbortSignal.timeout(9000) });
+  const md = await r.text();
+  if (!r.ok || /Target URL returned error|CAPTCHA|Just a moment/i.test(md.slice(0, 600))) {
+    return { error: "This site blocked the page (bot check)" };
+  }
+  const out = parsePage(md);
+  if (!out.blocks.length) return { error: "Nothing readable on this page" };
+  return out;
 }
 
 // ---------------------------------------------------------------- AI
@@ -392,6 +437,7 @@ export default async function handler(req, res) {
     if (app === "yt") return res.status(200).json(await ytSearch(String(q || "trending"), false));
     if (app === "shorts") return res.status(200).json(await ytSearch(String(q || "viral"), true));
     if (app === "google") return res.status(200).json(await google(String(q || "roblox")));
+    if (app === "page") return res.status(200).json(await page(String(u || "")));
     if (app === "ai") return res.status(200).json(await ai(String(q || ""), String(m || "")));
     if (app === "wiki") return res.status(200).json(await wiki(String(q || "")));
     if (app === "weather") return res.status(200).json(await weather(String(q || "")));
@@ -404,4 +450,4 @@ export default async function handler(req, res) {
   } catch (e) {
     return res.status(200).json({ results: [], note: "server error", error: String(e && e.message || e).slice(0, 200) });
   }
-}
+      }

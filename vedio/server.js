@@ -17,6 +17,7 @@ const IMG_ALLOW = [
   "images.dog.ceo", "cdn2.thecatapi.com",
   "www.artic.edu", "artic-web.imgix.net",
   "cdn.myanimelist.net", "the-trivia-api.com",
+  "gstatic.com",
 ];
 
 function isAllowedHost(u) {
